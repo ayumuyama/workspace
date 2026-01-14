@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import convolve
+import os
 
 def train_snn_structure(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, Nx, Thresh):
     """
@@ -156,18 +157,22 @@ def train_readout_multiclass(F, C, Nneuron, Nx, dt, leak, Thresh, Nclasses):
         # --- Task ---
         inp = Input[:, t-1]
         
-        if t < SwitchTime:
-            # Rule A
-            if inp[0] >= 0 and inp[1] >= 0: label_idx = 0
-            elif inp[0] < 0 and inp[1] >= 0: label_idx = 1
-            elif inp[0] < 0 and inp[1] < 0: label_idx = 2
-            else: label_idx = 3
+        # 入力を回転させるための行列計算 (45度 = pi/4)
+        if t >= SwitchTime:
+            theta = np.pi / 4
+            c, s = np.cos(theta), np.sin(theta)
+            # 回転行列で入力を変換
+            rot_x = inp[0] * c - inp[1] * s
+            rot_y = inp[0] * s + inp[1] * c
+            inp_for_label = np.array([rot_x, rot_y])
         else:
-            # Rule B (Shifted)
-            if inp[0] >= 0 and inp[1] >= 0: label_idx = 1
-            elif inp[0] < 0 and inp[1] >= 0: label_idx = 2
-            elif inp[0] < 0 and inp[1] < 0: label_idx = 3
-            else: label_idx = 0
+            inp_for_label = inp
+
+        # ラベル決定ロジック（常に同じ判定基準を使うが、入力自体が回っている）
+        if inp_for_label[0] >= 0 and inp_for_label[1] >= 0: label_idx = 0
+        elif inp_for_label[0] < 0 and inp_for_label[1] >= 0: label_idx = 1
+        elif inp_for_label[0] < 0 and inp_for_label[1] < 0: label_idx = 2
+        else: label_idx = 3
 
         target_vec = np.zeros(Nclasses)
         target_vec[label_idx] = 1.0
@@ -194,8 +199,16 @@ def train_readout_multiclass(F, C, Nneuron, Nx, dt, leak, Thresh, Nclasses):
     # 【修正3】 全スコア配列を返す
     return rec_target, rec_estim_class, acc_history, SwitchTime, spike_times, spike_neurons, rec_scores
 
+# === メイン処理とプロット (3枚目だけ拡大版に戻す) ===
 if __name__ == "__main__":
-    # ... (パラメータ設定やPhase 1は変更なし) ...
+    import os
+    
+    # 保存ディレクトリ
+    save_dir = 'results'
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    # パラメータ設定
     Nneuron = 50
     Nx = 2
     Nclasses = 4
@@ -208,63 +221,100 @@ if __name__ == "__main__":
     beta = 1 / 0.9
     mu = 0.02 / 0.9
 
-    # Phase 1
+    # 1. 学習実行
     F, C = train_snn_structure(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, Nx, Thresh)
     
-    # Phase 2
-    # 戻り値の名前を scores_all に変更
+    # 2. タスク学習
     targets, est_classes, accuracy, switch_t, spk_t, spk_i, scores_all = \
         train_readout_multiclass(F, C, Nneuron, Nx, dt, leak, Thresh, Nclasses)
     
-    # Phase 3 Plotting
+    # --- データ長の調整 (重要) ---
+    # accuracy はループ内で append したため長さ 29999 (t=1 to 29999)
+    # scores_all は固定長 30000 (index=0 は未使用)
+    # よって、index=1以降を取り出して長さを合わせます
+    scores_valid = scores_all[1:] 
+    
+    # 時間軸を作成 (長さ 29999)
     time_axis = np.arange(len(accuracy)) * dt
     switch_sec = switch_t * dt
     
-    plt.figure(figsize=(10, 12))
-    
-    # 1. Accuracy
-    plt.subplot(3, 1, 1)
-    plt.plot(time_axis, accuracy, label='Accuracy', color='blue')
-    plt.axvline(x=switch_sec, color='r', linestyle='--', label='Rule Change')
-    plt.title(f'{Nclasses}-Class Classification Accuracy')
-    plt.ylim(0, 1.1)
-    plt.legend()
-    plt.grid(True)
+    print(f"Shapes adjusted -> time: {time_axis.shape}, scores: {scores_valid.shape}")
 
-    # 2. Raster
-    plt.subplot(3, 1, 2)
-    plt.scatter(spk_t, spk_i, s=1, c='black', marker='|')
-    plt.axvline(x=switch_sec, color='r', linestyle='--')
-    plt.title('Spike Raster Plot')
+    # --- 画像1: 正解率 (Accuracy) - 平滑化を追加 ---
+    def moving_average(data, window_size):
+        """移動平均を計算する関数"""
+        # 畳み込み積分を使って高速に計算
+        window = np.ones(window_size) / window_size
+        return np.convolve(data, window, mode='valid')
+
+    plt.figure(figsize=(12, 6))
+    
+    # 1. 元のデータ（薄く表示）
+    # 変動を見るために alpha=0.2 で薄く残します
+    plt.plot(time_axis, accuracy, color='blue', alpha=0.2, label='Raw Accuracy (0.2s window)')
+    
+    # 2. 平滑化したデータ（濃く表示）
+    # window_size=1000 (1.0秒分) 程度にするとトレンドが見やすくなります
+    window_size = 1000 
+    acc_smooth = moving_average(accuracy, window_size)
+    
+    # convolutionを使うとデータ長が少し減るので、時間軸も合わせる必要があります
+    # 'valid'モードの場合、前後が削れるので、中央に合わせて調整します
+    time_smooth = time_axis[window_size-1:]
+    
+    plt.plot(time_smooth, acc_smooth, color='blue', linewidth=2, label=f'Smoothed Accuracy ({window_size*dt:.1f}s window)')
+    
+    plt.axvline(x=switch_sec, color='r', linestyle='--', label='Rule Change', linewidth=2)
+    
+    plt.title(f'{Nclasses}-Class Classification Accuracy (Trend)', fontsize=14)
+    plt.xlabel('Time (s)', fontsize=12)
+    plt.ylabel('Accuracy', fontsize=12)
+    plt.ylim(0, 1.05)
+    plt.legend(fontsize=12, loc='lower right')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, '1_Accuracy_Smoothed.png'))
+    plt.close()
+
+    # --- 画像2: ラスタープロット (Raster) - 全期間 ---
+    plt.figure(figsize=(12, 6))
+    plt.scatter(spk_t, spk_i, s=1, c='black', marker='|', alpha=0.5)
+    plt.axvline(x=switch_sec, color='r', linestyle='--', linewidth=2)
+    plt.title('Spike Raster Plot (Full Range)', fontsize=14)
+    plt.xlabel('Time (s)', fontsize=12)
+    plt.ylabel('Neuron Index', fontsize=12)
     plt.xlim(0, time_axis[-1])
     plt.ylim(-0.5, Nneuron - 0.5)
     plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, '2_Raster.png'))
+    plt.close()
 
-    # 3. Class Scores (Zoom)
-    plt.subplot(3, 1, 3)
+    # --- 画像3: クラススコア推移 (Scores) - ★ここだけ拡大版 ---
+    plt.figure(figsize=(12, 6))
     
-    # 【修正4】 インデックス範囲を指定して、時間軸とデータを同じスライスで切り出す
-    start_idx = switch_t - 500
-    end_idx = switch_t + 500
+    # 拡大範囲のインデックス計算 (ルール変更前後 500ステップ)
+    # time_axisは t=1 から始まっているので、index は t-1 に対応しますが
+    # 単純に switch_t を中心としてスライスすればズレは許容範囲です
+    start_idx = max(0, switch_t - 500)
+    end_idx = min(len(time_axis), switch_t + 500)
     
-    # numpyスライスを使うことで shape が確実に一致します
-    # time_axis[start:end] -> shape (1000,)
-    # scores_all[start:end] -> shape (1000, 4)
+    # 同じ範囲でスライス (ここが重要)
     time_zoom = time_axis[start_idx : end_idx]
-    scores_zoom = scores_all[start_idx : end_idx]
-
-    # プロット
+    scores_zoom = scores_valid[start_idx : end_idx]
     
     colors = ['r', 'g', 'b', 'orange']
     for c in range(Nclasses):
-        plt.plot(time_zoom, scores_zoom[:, c], label=f'Class {c}', color=colors[c], alpha=0.8)
+        plt.plot(time_zoom, scores_zoom[:, c], label=f'Class {c}', color=colors[c], alpha=0.8, linewidth=2)
         
-    plt.axvline(x=switch_sec, color='k', linestyle='--', alpha=0.5)
-    plt.title('Class Scores (Zoom around Rule Change)')
-    plt.xlabel('Time (s)')
-    plt.ylabel('Readout Activity')
-    plt.legend(loc='upper right', fontsize='small')
+    plt.axvline(x=switch_sec, color='k', linestyle='--', linewidth=2, label='Rule Change')
+    plt.title('Readout Class Scores (Zoom: Switch ±0.5s)', fontsize=14)
+    plt.xlabel('Time (s)', fontsize=12)
+    plt.ylabel('Score (Logits)', fontsize=12)
+    plt.legend(loc='upper right', fontsize=10)
     plt.grid(True)
-    
     plt.tight_layout()
-    plt.savefig('results/SNN_Multiclass_Fixed.png')
+    plt.savefig(os.path.join(save_dir, '3_Scores_Zoom.png'))
+    plt.close()
+
+    print("All images (Accuracy, Raster, Zoomed Scores) saved successfully.")
