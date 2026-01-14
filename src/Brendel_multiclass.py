@@ -252,6 +252,8 @@ if __name__ == "__main__":
     # scores_all[start:end] -> shape (1000, 4)
     time_zoom = time_axis[start_idx : end_idx]
     scores_zoom = scores_all[start_idx : end_idx]
+
+    # プロット
     
     colors = ['r', 'g', 'b', 'orange']
     for c in range(Nclasses):
