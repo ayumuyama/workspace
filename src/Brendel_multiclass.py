@@ -89,31 +89,24 @@ def train_snn_structure(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, Nx, Thre
     print("Phase 1 Completed.")
     return F, C
 
-def train_readout_task(F, C, Nneuron, Nx, dt, leak, Thresh):
-    """
-    Phase 2: 固定されたSNNを使って分類タスクを学習する
-    (ラスタープロット用のスパイク記録を追加)
-    """
-    print("Phase 2: Training Readout for Classification...")
+def train_readout_multiclass(F, C, Nneuron, Nx, dt, leak, Thresh, Nclasses):
+    print(f"Phase 2: Training Readout for {Nclasses}-Class Classification...")
 
-    # タスク設定
-    TimeT = 30000        # 全ステップ数
-    SwitchTime = 15000   # ルール変更タイミング
-    lr_readout = 0.02    # 学習率
+    TimeT = 30000        
+    SwitchTime = 15000   
+    lr_readout = 0.02    
     
-    W_out = np.zeros(Nneuron)
+    W_out = np.zeros((Nclasses, Nneuron))
     
-    # 状態変数リセット
     V = np.zeros(Nneuron)
     rO = np.zeros(Nneuron)
     O = 0
     k = 0
     
-    # ★スパイク記録用リスト
     spike_times = []
     spike_neurons = []
     
-    # テスト用入力データの生成
+    # 入力データ生成
     sigma = 30
     t_kern = np.arange(1, 1001)
     w = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-((t_kern - 500)**2) / (2 * sigma**2))
@@ -125,14 +118,18 @@ def train_readout_task(F, C, Nneuron, Nx, dt, leak, Thresh):
     for d in range(Nx):
         Input[d, :] = A * convolve(Input[d, :], w, mode='same')
 
-    # 記録用
+    # --- 記録用配列の初期化 ---
     rec_target = np.zeros(TimeT)
-    rec_estim = np.zeros(TimeT)
+    rec_estim_class = np.zeros(TimeT)
+    
+    # 【修正1】 全ステップのスコアを保存する配列を作成（サイズ合わせエラー防止のため）
+    rec_scores = np.zeros((TimeT, Nclasses))
+    
     acc_history = []
     acc_buffer = []
 
     for t in range(1, TimeT):
-        # --- SNN更新 (学習なし) ---
+        # --- SNN Update ---
         noise = 0.001 * np.random.randn(Nneuron)
         recurrent_input = np.zeros(Nneuron)
         if O == 1:
@@ -147,8 +144,6 @@ def train_readout_task(F, C, Nneuron, Nx, dt, leak, Thresh):
         if potentials[k_curr] >= 0:
             O = 1
             k = k_curr
-            
-            # ★ここでスパイクを記録
             spike_times.append(t * dt)
             spike_neurons.append(k)
         else:
@@ -158,92 +153,116 @@ def train_readout_task(F, C, Nneuron, Nx, dt, leak, Thresh):
         if O == 1:
             rO[k] += 1.0
 
-        # --- タスク: 動的なターゲット ---
+        # --- Task ---
         inp = Input[:, t-1]
+        
         if t < SwitchTime:
-            label = 1.0 if (inp[0] + inp[1]) > 0 else -1.0 # ルールA
+            # Rule A
+            if inp[0] >= 0 and inp[1] >= 0: label_idx = 0
+            elif inp[0] < 0 and inp[1] >= 0: label_idx = 1
+            elif inp[0] < 0 and inp[1] < 0: label_idx = 2
+            else: label_idx = 3
         else:
-            label = 1.0 if (inp[0] - inp[1]) > 0 else -1.0 # ルールB (変更)
+            # Rule B (Shifted)
+            if inp[0] >= 0 and inp[1] >= 0: label_idx = 1
+            elif inp[0] < 0 and inp[1] >= 0: label_idx = 2
+            elif inp[0] < 0 and inp[1] < 0: label_idx = 3
+            else: label_idx = 0
 
-        # --- 学習 (Delta Rule) ---
-        y_est = np.dot(W_out, rO)
-        error = label - y_est
-        W_out += lr_readout * error * rO
+        target_vec = np.zeros(Nclasses)
+        target_vec[label_idx] = 1.0
+
+        # --- Prediction & Learning ---
+        y_est_vec = np.dot(W_out, rO)
+        pred_idx = np.argmax(y_est_vec)
         
-        # 記録
-        rec_target[t] = label
-        rec_estim[t] = y_est
+        error_vec = target_vec - y_est_vec
+        W_out += lr_readout * np.outer(error_vec, rO)
         
-        is_correct = 1 if np.sign(y_est) == label else 0
+        # --- 記録 ---
+        rec_target[t] = label_idx
+        rec_estim_class[t] = pred_idx
+        
+        # 【修正2】 ここで現在のスコアベクトルをそのまま保存
+        rec_scores[t, :] = y_est_vec
+        
+        is_correct = 1 if pred_idx == label_idx else 0
         acc_buffer.append(is_correct)
         if len(acc_buffer) > 200: acc_buffer.pop(0)
         acc_history.append(np.mean(acc_buffer))
 
-    # ★戻り値にスパイクデータを追加
-    return rec_target, rec_estim, acc_history, SwitchTime, spike_times, spike_neurons
+    # 【修正3】 全スコア配列を返す
+    return rec_target, rec_estim_class, acc_history, SwitchTime, spike_times, spike_neurons, rec_scores
 
 if __name__ == "__main__":
-    # 共通パラメータ
-    Nneuron = 20
+    # ... (パラメータ設定やPhase 1は変更なし) ...
+    Nneuron = 50
     Nx = 2
+    Nclasses = 4
     leak = 50
     dt = 0.001
     Thresh = 0.5
-    
-    # 学習率パラメータ (Efficient Coding用)
     epsr = 0.001
     epsf = 0.0001
     alpha = 0.18
     beta = 1 / 0.9
     mu = 0.02 / 0.9
-    
-    # 1. ネットワーク構築 (Unsupervised)
-    # ここは変更なし
+
+    # Phase 1
     F, C = train_snn_structure(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, Nx, Thresh)
     
-    # 2. タスク学習 (Supervised / Online)
-    # ★戻り値を受け取る変数を増やす
-    targets, estims, accuracy, switch_t, spk_t, spk_i = train_readout_task(F, C, Nneuron, Nx, dt, leak, Thresh)
+    # Phase 2
+    # 戻り値の名前を scores_all に変更
+    targets, est_classes, accuracy, switch_t, spk_t, spk_i, scores_all = \
+        train_readout_multiclass(F, C, Nneuron, Nx, dt, leak, Thresh, Nclasses)
     
-    # 3. プロット (3段構成に変更)
+    # Phase 3 Plotting
     time_axis = np.arange(len(accuracy)) * dt
     switch_sec = switch_t * dt
     
-    plt.figure(figsize=(10, 10)) # サイズを少し縦長に
+    plt.figure(figsize=(10, 12))
     
-    # --- 上段: 正解率 ---
+    # 1. Accuracy
     plt.subplot(3, 1, 1)
-    plt.plot(time_axis, accuracy, label='Accuracy')
+    plt.plot(time_axis, accuracy, label='Accuracy', color='blue')
     plt.axvline(x=switch_sec, color='r', linestyle='--', label='Rule Change')
-    plt.title('1. Classification Accuracy')
-    plt.ylabel('Moving Avg Accuracy')
-    plt.legend(loc='lower right')
+    plt.title(f'{Nclasses}-Class Classification Accuracy')
+    plt.ylim(0, 1.1)
+    plt.legend()
     plt.grid(True)
 
-    # --- ★中段: ラスタープロット (新規追加) ---
+    # 2. Raster
     plt.subplot(3, 1, 2)
-    # 散布図でプロット (x=時間, y=ニューロンID)
     plt.scatter(spk_t, spk_i, s=1, c='black', marker='|')
     plt.axvline(x=switch_sec, color='r', linestyle='--')
-    plt.title('2. Spike Raster Plot')
-    plt.ylabel('Neuron Index')
-    plt.xlim(0, time_axis[-1]) # 時間軸を他と合わせる
+    plt.title('Spike Raster Plot')
+    plt.xlim(0, time_axis[-1])
     plt.ylim(-0.5, Nneuron - 0.5)
     plt.grid(True, alpha=0.3)
 
-    # --- 下段: 出力波形 (切り替え付近) ---
+    # 3. Class Scores (Zoom)
     plt.subplot(3, 1, 3)
-    vis_range = range(switch_t - 500, switch_t + 500)
-    # インデックスエラー回避のため範囲チェック
-    vis_range = [t for t in vis_range if t < len(targets)]
     
-    plt.plot(np.array(vis_range)*dt, targets[vis_range], 'k--', alpha=0.5, label='Target')
-    plt.plot(np.array(vis_range)*dt, estims[vis_range], 'g', label='Output')
-    plt.axvline(x=switch_sec, color='r', linestyle='--')
-    plt.title('3. Output vs Target (Around Rule Change)')
+    # 【修正4】 インデックス範囲を指定して、時間軸とデータを同じスライスで切り出す
+    start_idx = switch_t - 500
+    end_idx = switch_t + 500
+    
+    # numpyスライスを使うことで shape が確実に一致します
+    # time_axis[start:end] -> shape (1000,)
+    # scores_all[start:end] -> shape (1000, 4)
+    time_zoom = time_axis[start_idx : end_idx]
+    scores_zoom = scores_all[start_idx : end_idx]
+    
+    colors = ['r', 'g', 'b', 'orange']
+    for c in range(Nclasses):
+        plt.plot(time_zoom, scores_zoom[:, c], label=f'Class {c}', color=colors[c], alpha=0.8)
+        
+    plt.axvline(x=switch_sec, color='k', linestyle='--', alpha=0.5)
+    plt.title('Class Scores (Zoom around Rule Change)')
     plt.xlabel('Time (s)')
-    plt.legend(loc='upper right')
+    plt.ylabel('Readout Activity')
+    plt.legend(loc='upper right', fontsize='small')
     plt.grid(True)
     
     plt.tight_layout()
-    plt.savefig('results/Brendel_Binary.png')
+    plt.savefig('results/SNN_Multiclass_Fixed.png')

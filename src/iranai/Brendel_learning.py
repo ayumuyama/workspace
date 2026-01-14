@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import convolve
 from scipy.linalg import toeplitz
 import time
-from Brendel_runnet import runnet
+from iranai.Brendel_runnet import runnet
 
 def learning(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, Nx, Thresh, F, C):
     """
