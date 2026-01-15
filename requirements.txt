@@ -2,3 +2,5 @@ numpy
 matplotlib
 scipy
 tqdm
+scikit-learn
+pandas
