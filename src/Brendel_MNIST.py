@@ -105,7 +105,7 @@ def train_readout_mnist(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gai
     print(f"Phase 2 ({label_suffix}): Training Readout...")
 
     NumSamples = 5000  # 【修正】サンプル数を増やして学習を安定させる
-    Duration = 50      
+    Duration = 30      
     lr_readout = 0.02  # 【修正】学習率を少し上げる
     
     # Readout重みとバイアス
