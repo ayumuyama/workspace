@@ -127,7 +127,16 @@ def train_readout_mnist(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gai
         if i % 100 == 0:
             print(f'\r  Sample {i}/{NumSamples}', end='')
 
-        img = X_data[i] * Gain
+        # 元の画像データを取得
+        raw_img = X_data[i]
+        
+        # 250サンプル目以降なら90度回転させる
+        if i >= 250:
+            # (784,) -> (28, 28) に戻して回転し、再度 (784,) に平坦化
+            raw_img = np.rot90(raw_img.reshape(28, 28), k=1).flatten()
+            
+        img = raw_img * Gain
+        # === 変更点: ここまで ===
         label = y_data[i]
         
         target_vec = np.zeros(Nclasses)
@@ -221,7 +230,13 @@ def train_poisson_readout_mnist(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thr
         if i % 100 == 0:
             print(f'\r  Poisson Sample {i}/{NumSamples}', end='')
 
-        img = X_data[i] * Gain
+        raw_img = X_data[i]
+        
+        if i >= 250:
+            # 90度回転 (反時計回り)
+            raw_img = np.rot90(raw_img.reshape(28, 28), k=1).flatten()
+            
+        img = raw_img * Gain
         label = y_data[i]
         target_vec = np.zeros(Nclasses)
         target_vec[label] = 1.0
@@ -265,24 +280,33 @@ def train_poisson_readout_mnist(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thr
             
             rO_snn = (1 - leak * dt) * rO_snn
 
-        # --- Step 2 & 3: ポアソンスパイク生成とReadout学習 ---
+        # --- Step 2 & 3: スパイク時刻のシャッフルとReadout学習 ---
         
-        # 発火率 lambda (spikes per step)
-        # Duration全体での発火確率を計算
-        # 各ステップでの発火確率 p = count / Duration
-        firing_probs = spike_counts / Duration
+        # 事前にこのサンプルの全タイムステップ分のスパイクパタンを作成する
+        # shape: (Duration, Nneuron)
+        random_spike_train = np.zeros((Duration, Nneuron))
+        
+        for n_idx in range(Nneuron):
+            n_spikes = int(spike_counts[n_idx])
+            
+            if n_spikes > 0:
+                # Durationの範囲内で、n_spikes個のユニークな時刻をランダムに選ぶ
+                # replace=False にすることで、同じ時刻に重なるのを防ぐ（バイナリスパイクの維持）
+                # ※もし n_spikes > Duration になるほど高頻度なら replace=True か min(n, Duration) が必要だが、WTAならFalseでOK
+                if n_spikes > Duration: n_spikes = Duration 
+                
+                random_times = np.random.choice(Duration, n_spikes, replace=False)
+                random_spike_train[random_times, n_idx] = 1.0
         
         # Poissonネットワーク用の状態変数
         rO_poisson = np.zeros(Nneuron)
         img_correct_counts = 0
         time_offset = i * Duration * dt
 
-        # 再び時間を回して、今度はランダムにスパイクさせる
+        # 時間ループ
         for t in range(Duration):
-            # ポアソン過程によるスパイク生成
-            # rand < p なら発火 (ニューロンごとに独立判定)
-            random_vals = np.random.rand(Nneuron)
-            spikes = (random_vals < firing_probs).astype(float)
+            # シャッフルされたスパイクを取り出す
+            spikes = random_spike_train[t]
             
             # フィルタ更新
             rO_poisson = (1 - leak * dt) * rO_poisson + spikes
