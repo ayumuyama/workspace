@@ -28,7 +28,7 @@ def load_mnist_data():
 
 # === 3. 構造学習: 信号データ用 ===
 def train_snn_structure_signal(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, Nx, Thresh, 
-                               Nit=50000, Ntime=1000):
+                               Nit=25000, Ntime=1000):
     print(f"Phase 1: Pre-training SNN structure (Signal mode, Nit={Nit}, Ntime={Ntime})...")
     
     TotTime = Nit * Ntime
@@ -70,8 +70,6 @@ def train_snn_structure_signal(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, N
             
         V = (1 - leak * dt) * V + dt * (F.T @ curr_Input) + recurrent_input + noise
         x = (1 - leak * dt) * x + dt * curr_Input
-        
-        V = np.clip(V, -10, 10)
 
         thresh_noise = 0.01 * np.random.randn(Nneuron)
         potentials = V - Thresh - thresh_noise
@@ -95,8 +93,9 @@ def train_snn_structure_signal(dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, N
 
 # === 4. 構造学習: MNIST画像用 ===
 def train_snn_structure_mnist(X_train, dt, leak, epsr, epsf, alpha, beta, mu, Nneuron, Nx, Thresh, Gain, 
-                              Nit=50000, Duration=30):
+                              Nit=20000, Duration=30):
     print(f"Phase 1: Pre-training SNN structure (MNIST mode, Nit={Nit}, Duration={Duration})...")
+    print(epsr, epsf)
     
     F, C = init_weights(Nx, Nneuron)
     
@@ -124,8 +123,7 @@ def train_snn_structure_mnist(X_train, dt, leak, epsr, epsf, alpha, beta, mu, Nn
                 
             V = (1 - leak * dt) * V + dt * (F.T @ current_image) + recurrent_input + noise
             x = (1 - leak * dt) * x + dt * current_image
-            V = np.clip(V, -10, 10)
-
+ 
             thresh_noise = 0.01 * np.random.randn(Nneuron)
             potentials = V - Thresh - thresh_noise
             k_curr = np.argmax(potentials)
@@ -185,7 +183,6 @@ def train_readout_mnist(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gai
                 recurrent_input = C[:, k]
 
             V = (1 - leak * dt) * V + dt * (F.T @ img) + recurrent_input + noise
-            V = np.clip(V, -10, 10)
             
             thresh_noise = 0.01 * np.random.randn(Nneuron)
             potentials = V - Thresh - thresh_noise
@@ -221,7 +218,7 @@ def train_readout_mnist(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gai
     return acc_history, spike_times, spike_neurons
 
 # === 6. 読み出し層学習 (回転あり・F,C固定) ===
-def train_readout_mnist_Rotation(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gain, label_suffix="", NumSamples=5000, Duration=30, lr_readout=0.02):
+def train_readout_mnist_Rotation(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gain, label_suffix="", NumSamples=7000, Duration=30, lr_readout=0.008):
     Nclasses = 10
     print(f"Phase 2 ({label_suffix}): Training Readout (with Rotation)...")
     
@@ -243,7 +240,7 @@ def train_readout_mnist_Rotation(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Th
             print(f'\r  Sample {i}/{NumSamples}', end='')
 
         raw_img = X_data[i]
-        if i >= 250:
+        if i >= 1000:
             raw_img = np.rot90(raw_img.reshape(28, 28), k=1).flatten()
             
         img = raw_img * Gain
@@ -262,7 +259,6 @@ def train_readout_mnist_Rotation(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Th
                 recurrent_input = C[:, k]
 
             V = (1 - leak * dt) * V + dt * (F.T @ img) + recurrent_input + noise
-            V = np.clip(V, -10, 10)
             
             thresh_noise = 0.01 * np.random.randn(Nneuron)
             potentials = V - Thresh - thresh_noise
@@ -301,12 +297,11 @@ def train_readout_mnist_Rotation(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Th
 def train_readout_mnist_Rotation_Retrain(F_init, C_init, X_data, y_data, 
                                          Nneuron, Nx, dt, leak, Thresh, Gain, 
                                          epsf, epsr, alpha, beta, mu,
-                                         label_suffix="", NumSamples=5000, Duration=30, 
-                                         lr_readout=0.02, retrain_start=500):
+                                         label_suffix="", NumSamples=7000, Duration=30, 
+                                         retrain_start=2000, lr_readout=0.008):
     Nclasses = 10
-    print(f"Phase 2 ({label_suffix}): Training Readout (Rotation + Retrain from {retrain_start})...")
+    print(f"Phase 2 ({label_suffix}): Training Readout (Online Learning: 250-6000)...")
     
-    # 重みをコピーして使用（元の重みを破壊しないため）
     F = F_init.copy()
     C = C_init.copy()
     
@@ -315,8 +310,94 @@ def train_readout_mnist_Rotation_Retrain(F_init, C_init, X_data, y_data,
     
     V = np.zeros(Nneuron)
     rO = np.zeros(Nneuron)
-    x = np.zeros(Nx) # 構造学習用の入力トレース
+    x = np.zeros(Nx)
     Id = np.eye(Nneuron)
+    O = 0
+    k = 0
+
+    acc_history = []
+    acc_buffer = []
+    spike_times = []
+    spike_neurons = []
+    
+    for i in range(NumSamples):
+
+        if i % 100 == 0:
+            print(f'\r  Sample {i}/{NumSamples}', end='')
+
+        raw_img = X_data[i]
+        
+        if i >= 1000:
+            raw_img = np.rot90(raw_img.reshape(28, 28), k=1).flatten()
+            
+        img = raw_img * Gain
+        label = y_data[i]
+        
+        target_vec = np.zeros(Nclasses)
+        target_vec[label] = 1.0
+
+        img_correct_counts = 0
+        time_offset = i * Duration * dt
+        
+        for t in range(Duration):
+            noise = 0.02 * np.random.randn(Nneuron)
+            recurrent_input = 0
+            if O == 1:
+                recurrent_input = C[:, k]
+
+            V = (1 - leak * dt) * V + dt * (F.T @ img) + recurrent_input + noise
+            x = (1 - leak * dt) * x + dt * img 
+            
+            thresh_noise = 0.01 * np.random.randn(Nneuron)
+            potentials = V - Thresh - thresh_noise
+            k_curr = np.argmax(potentials)
+            
+            if potentials[k_curr] >= 0:
+                O = 1
+                k = k_curr
+                spike_times.append(time_offset + t * dt)
+                spike_neurons.append(k)
+                
+                # --- F, C の更新制御 ---
+                # retrain_start から 
+                if i >= retrain_start:
+                    F[:, k] += epsf * (alpha * x - F[:, k])
+                    C[:, k] -= epsr * (beta * (V + mu * rO) + C[:, k] + mu * Id[:, k])
+            else:
+                O = 0
+                
+            rO = (1 - leak * dt) * rO
+            if O == 1:
+                rO[k] += 1.0
+
+            # --- Readout Learning (デコーダは常に適応を続ける設定) ---
+            y_est_vec = np.dot(W_out, rO) + b_out
+            pred_idx = np.argmax(y_est_vec)
+            error_vec = target_vec - y_est_vec
+            W_out += lr_readout * np.outer(error_vec, rO)
+            b_out += lr_readout * error_vec
+            
+            if pred_idx == label:
+                img_correct_counts += 1
+        
+        is_correct = 1 if (img_correct_counts / Duration) > 0.5 else 0
+        acc_buffer.append(is_correct)
+        if len(acc_buffer) > 200: acc_buffer.pop(0)
+        acc_history.append(np.mean(acc_buffer))
+
+    print(f"\nPhase 2 Completed. Final Accuracy: {acc_history[-1]:.4f}")
+    return acc_history, spike_times, spike_neurons
+
+# === 8. 読み出し層学習 (回転あり・F,C固定・途中で回転が戻り，それと同時にデコーダのオンライン学習が1000枚停止する) ===
+def train_readout_mnist_Rotation_return(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gain, label_suffix="", NumSamples=5000, Duration=30):
+    Nclasses = 10
+    print(f"Phase 2 ({label_suffix}): Training Readout (with Rotation)...")
+    
+    W_out = np.zeros((Nclasses, Nneuron))
+    b_out = np.zeros(Nclasses)
+    
+    V = np.zeros(Nneuron)
+    rO = np.zeros(Nneuron)
     O = 0
     k = 0
 
@@ -329,9 +410,13 @@ def train_readout_mnist_Rotation_Retrain(F_init, C_init, X_data, y_data,
         if i % 100 == 0:
             print(f'\r  Sample {i}/{NumSamples}', end='')
 
+        if 6000 < i <= 7000:
+            lr_readout = 0
+        else:
+            lr_readout = 0.02
+
         raw_img = X_data[i]
-        # 250サンプル目以降なら90度回転
-        if i >= 250:
+        if 250 <= i < 6000:
             raw_img = np.rot90(raw_img.reshape(28, 28), k=1).flatten()
             
         img = raw_img * Gain
@@ -350,9 +435,100 @@ def train_readout_mnist_Rotation_Retrain(F_init, C_init, X_data, y_data,
                 recurrent_input = C[:, k]
 
             V = (1 - leak * dt) * V + dt * (F.T @ img) + recurrent_input + noise
-            x = (1 - leak * dt) * x + dt * img # 構造学習用に x を更新
             
-            V = np.clip(V, -10, 10)
+            thresh_noise = 0.01 * np.random.randn(Nneuron)
+            potentials = V - Thresh - thresh_noise
+            k_curr = np.argmax(potentials)
+            
+            if potentials[k_curr] >= 0:
+                O = 1
+                k = k_curr
+                spike_times.append(time_offset + t * dt)
+                spike_neurons.append(k)
+            else:
+                O = 0
+                
+            rO = (1 - leak * dt) * rO
+            if O == 1:
+                rO[k] += 1.0
+
+            y_est_vec = np.dot(W_out, rO) + b_out
+            pred_idx = np.argmax(y_est_vec)
+            error_vec = target_vec - y_est_vec
+            W_out += lr_readout * np.outer(error_vec, rO)
+            b_out += lr_readout * error_vec
+            
+            if pred_idx == label:
+                img_correct_counts += 1
+        
+        is_correct = 1 if (img_correct_counts / Duration) > 0.5 else 0
+        acc_buffer.append(is_correct)
+        if len(acc_buffer) > 200: acc_buffer.pop(0)
+        acc_history.append(np.mean(acc_buffer))
+
+    print(f"\nPhase 2 Completed. Final Accuracy: {acc_history[-1]:.4f}")
+    return acc_history, spike_times, spike_neurons
+
+# === 9. 読み出し層学習 (回転あり・途中からF,C再学習，途中で回転が戻り，それと同時にデコーダのオンライン学習が1000枚停止する) ===
+def train_readout_mnist_Rotation_Retrain_return(F_init, C_init, X_data, y_data, 
+                                         Nneuron, Nx, dt, leak, Thresh, Gain, 
+                                         epsf, epsr, alpha, beta, mu,
+                                         label_suffix="", NumSamples=5000, Duration=30, 
+                                         retrain_start=250):
+    Nclasses = 10
+    print(f"Phase 2 ({label_suffix}): Training Readout (Online Learning: 250-6000)...")
+    
+    F = F_init.copy()
+    C = C_init.copy()
+    
+    W_out = np.zeros((Nclasses, Nneuron))
+    b_out = np.zeros(Nclasses)
+    
+    V = np.zeros(Nneuron)
+    rO = np.zeros(Nneuron)
+    x = np.zeros(Nx)
+    Id = np.eye(Nneuron)
+    O = 0
+    k = 0
+
+    acc_history = []
+    acc_buffer = []
+    spike_times = []
+    spike_neurons = []
+    
+    for i in range(NumSamples):
+        if 6000 < i <= 7000:
+            lr_readout = 0
+        else:
+            lr_readout = 0.02
+
+        if i % 100 == 0:
+            print(f'\r  Sample {i}/{NumSamples}', end='')
+
+        raw_img = X_data[i]
+        
+        # --- 入力画像の制御 ---
+        # 250枚目から5999枚目までを回転させ、6000枚目以降は元に戻す
+        if 250 <= i < 6000:
+            raw_img = np.rot90(raw_img.reshape(28, 28), k=1).flatten()
+            
+        img = raw_img * Gain
+        label = y_data[i]
+        
+        target_vec = np.zeros(Nclasses)
+        target_vec[label] = 1.0
+
+        img_correct_counts = 0
+        time_offset = i * Duration * dt
+        
+        for t in range(Duration):
+            noise = 0.02 * np.random.randn(Nneuron)
+            recurrent_input = 0
+            if O == 1:
+                recurrent_input = C[:, k]
+
+            V = (1 - leak * dt) * V + dt * (F.T @ img) + recurrent_input + noise
+            x = (1 - leak * dt) * x + dt * img 
             
             thresh_noise = 0.01 * np.random.randn(Nneuron)
             potentials = V - Thresh - thresh_noise
@@ -364,21 +540,19 @@ def train_readout_mnist_Rotation_Retrain(F_init, C_init, X_data, y_data,
                 spike_times.append(time_offset + t * dt)
                 spike_neurons.append(k)
                 
-                # === 再学習ロジック: 500枚目以降ならF, Cも更新 ===
-                if i >= retrain_start:
+                # --- F, C の更新制御 ---
+                # retrain_start から 5999枚目まで更新を行い、6000枚目以降は停止
+                if retrain_start <= i < 6000:
                     F[:, k] += epsf * (alpha * x - F[:, k])
                     C[:, k] -= epsr * (beta * (V + mu * rO) + C[:, k] + mu * Id[:, k])
             else:
                 O = 0
                 
-            # Readoutの学習タイミング (既存関数と合わせるため rO 更新前に decay)
-            # 注: 構造学習(train_snn_structure_mnist)とは rO の更新タイミングが微妙に異なるが、
-            # Readout性能の連続性を保つため train_readout_mnist のスタイルをベースにする
             rO = (1 - leak * dt) * rO
             if O == 1:
                 rO[k] += 1.0
 
-            # --- Readout Learning ---
+            # --- Readout Learning (デコーダは常に適応を続ける設定) ---
             y_est_vec = np.dot(W_out, rO) + b_out
             pred_idx = np.argmax(y_est_vec)
             error_vec = target_vec - y_est_vec
