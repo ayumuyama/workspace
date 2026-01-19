@@ -247,7 +247,7 @@ def train_readout_mnist(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gai
     
     return acc_history, spike_times, spike_neurons
 
-def train_readout_mnist_Rotation(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gain, label_suffix="", NumSamples=1500, Duration=30, lr_readout=0.02):
+def train_readout_mnist_Rotation(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gain, label_suffix="", NumSamples=5000, Duration=30, lr_readout=0.02):
     Nclasses = 10
     print(f"Phase 2 ({label_suffix}): Training Readout...")
     
