@@ -21,9 +21,9 @@ Nneuron = 50
 leak = 5
 dt = 0.001
 Thresh = 0.5
-epsr = 0.005
-epsf = 0.0005
-lr_readout = 0.05
+epsr = 0.05
+epsf = 0.005
+lr_readout = 0.04
 alpha = 0.18
 beta = 1 / 0.9
 mu = 0.02 / 0.9
@@ -46,8 +46,12 @@ def load_raw_data(csv_path, input_cols, label_col):
         df = pd.read_csv(csv_path, header=0)
 
     raw_inputs = df.iloc[:, input_cols].values # (Samples, Nx)
-    raw_labels = df.iloc[:, label_col].values  # (Samples,)
+    # --- 追加: ノイズ注入 ---
+    # 0.05 ~ 0.2 くらいで調整してください。大きすぎると誰も解けなくなります。
+    noise_level = 0.1 
+    raw_inputs += noise_level * np.random.randn(*raw_inputs.shape)
     
+    raw_labels = df.iloc[:, label_col].values  # (Samples,)
     return raw_inputs, raw_labels
 
 def expand_data(inputs, steps):
@@ -168,6 +172,7 @@ def run_snn_simulation(raw_inputs, raw_labels, steps_per_sample):
     
     rec_acc = []
     acc_buffer = []
+    sample_preds = [] # 1サンプル内の予測を貯めるリスト
     
     # --- 【追加】スパイク記録用リスト ---
     spk_times = []
@@ -220,15 +225,38 @@ def run_snn_simulation(raw_inputs, raw_labels, steps_per_sample):
         error = target_vec - y_est
         W_out += lr_readout * np.outer(error, rO)
         
-        # Accuracy Tracking
-        is_correct = 1 if pred_idx == label_idx else 0
-        acc_buffer.append(is_correct)
+        # このステップでの予測を一時保存
+        sample_preds.append(pred_idx)
+    
+        # 30ステップ経過（＝1サンプル終了）したタイミングで評価
+        if (t + 1) % STEPS_PER_SAMPLE == 0:
         
-        # 移動平均窓 (10サンプル分くらいの期間)
-        window_size = STEPS_PER_SAMPLE * 10
-        if len(acc_buffer) > window_size:
-            acc_buffer.pop(0)
-        rec_acc.append(np.mean(acc_buffer))
+            # 方法1: 多数決で決める（安定的でおすすめ）
+            # 最頻値を計算 (bincountは高速です)
+            final_pred = np.bincount(sample_preds).argmax()
+        
+            # 方法2: 最後の瞬間の予測を採用するなら
+            # final_pred = pred_idx 
+        
+            # 正誤判定 (この1回だけを記録！)
+            true_label = Labels_P2[t] # 現在の真のラベル
+            label_idx = label_map[true_label]
+        
+            is_correct = 1 if final_pred == label_idx else 0
+        
+            # 移動平均用バッファに追加
+            acc_buffer.append(is_correct)
+        
+            # 次のためにリセット
+            sample_preds = [] 
+        
+            # 移動平均の計算（ここはウィンドウサイズの問題）
+            # 例：直近50「サンプル」の平均をとる
+            window_size_samples = 500 
+            if len(acc_buffer) > window_size_samples:
+                acc_buffer.pop(0)
+        
+            rec_acc.append(np.mean(acc_buffer))
 
     # --- 【追加】スパイク情報も返す ---
     return rec_acc, spk_times, spk_neurons
@@ -248,7 +276,7 @@ if __name__ == "__main__":
     # 2. シミュレーション実行 (戻り値を受け取る)
     accuracy, spk_t, spk_i = run_snn_simulation(raw_inputs, raw_labels, STEPS_PER_SAMPLE)
     
-    time_axis = np.arange(len(accuracy)) * dt
+    time_axis = np.arange(len(accuracy)) * dt * STEPS_PER_SAMPLE
     
     # --- 3. 画像1: 正解率 (Accuracy) ---
     plt.figure(figsize=(12, 6))
@@ -280,3 +308,36 @@ if __name__ == "__main__":
     plt.savefig(raster_path)
     plt.close()
     print(f"Done. Raster plot saved to {raster_path}")
+
+    # データを前半と後半に分割
+half_point = len(accuracy) // 2
+acc_phase1 = accuracy[:half_point]
+acc_phase2 = accuracy[half_point:]
+
+# 長さが合わない場合の調整（念のため）
+min_len = min(len(acc_phase1), len(acc_phase2))
+acc_phase1 = acc_phase1[:min_len]
+acc_phase2 = acc_phase2[:min_len]
+
+# 時間軸（相対時間）
+time_relative = np.arange(min_len) * dt * STEPS_PER_SAMPLE
+
+plt.figure(figsize=(10, 6))
+
+# 前半（Phase 1）のプロット
+plt.plot(time_relative, acc_phase1, label='1st Cycle (0-150s)', 
+         color='blue', alpha=0.5, linestyle='--')
+
+# 後半（Phase 2）のプロット
+plt.plot(time_relative, acc_phase2, label='2nd Cycle (150-300s)', 
+         color='red', linewidth=2)
+
+plt.title('Comparison of Learning Curves: 1st vs 2nd Cycle')
+plt.xlabel('Relative Time (s)')
+plt.ylabel('Accuracy')
+plt.grid(True)
+plt.legend()
+
+save_path_comparison = os.path.join(save_dir, 'cycle_comparison.png')
+plt.savefig(save_path_comparison)
+print(f"Comparison plot saved to {save_path_comparison}")
