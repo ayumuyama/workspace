@@ -7,7 +7,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from app import brendel_utils as bu
+from app import brendel_random_mnist_utils as bu
 
 if __name__ == "__main__":
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S_MNIST_Tuned')

@@ -6,7 +6,7 @@ import sys
 
 # パス設定と自作モジュールの読み込み
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from app import brendel_utils as bu
+from app import brendel_random_mnist_utils as bu
 
 # === 新規作成: 途中からFとCも再学習する関数 ===
 def train_readout_mnist_Rotation_Retrain(F, C, X_data, y_data, Nneuron, Nx, dt, leak, Thresh, Gain,
