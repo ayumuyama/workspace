@@ -4,3 +4,4 @@ __pycache__/
 
 # 解析結果・画像（重くなる原因）
 results/
+data/
